@@ -1,0 +1,168 @@
+-- globals
+_G.SkeletonESPEnabled = true
+_G.OutlineEnabled = true
+_G.LineColor = Color3.new(0, 1, 0) 
+_G.OutlineColor = Color3.new(0, 0, 0) 
+_G.LineThickness = 2
+_G.OutlineThickness = 4
+_G.RefreshRate = 0.05
+_G.MonitorInterval = 0.2
+_G.MaxRenderDistance = 1000 
+_G.FallbackTransparency = 0.5 
+
+local Camera = workspace.CurrentCamera
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local activeDrawings = {}
+
+
+
+-- Cleanup Skeleton for a Player
+local function cleanUpSkeleton(player)
+    if activeDrawings[player] then
+        for _, drawing in ipairs(activeDrawings[player]) do
+            if drawing.line then drawing.line:Remove() end
+            if drawing.outline then drawing.outline:Remove() end
+        end
+        activeDrawings[player] = nil
+    end
+end
+
+-- Create Skeleton ESP
+local function createSkeleton(player)
+    if activeDrawings[player] then return end
+    local skeletonData = {}
+    local connections = {
+        {"Head", "UpperTorso"}, {"UpperTorso", "LowerTorso"},
+        {"UpperTorso", "LeftUpperArm"}, {"UpperTorso", "RightUpperArm"},
+        {"LowerTorso", "LeftUpperLeg"}, {"LowerTorso", "RightUpperLeg"},
+        {"LeftUpperArm", "LeftLowerArm"}, {"RightUpperArm", "RightLowerArm"},
+        {"LeftLowerArm", "LeftHand"}, {"RightLowerArm", "RightHand"},
+        {"LeftUpperLeg", "LeftLowerLeg"}, {"RightUpperLeg", "RightLowerLeg"},
+        {"LeftLowerLeg", "LeftFoot"}, {"RightLowerLeg", "RightFoot"}
+    }
+
+    for _, connection in ipairs(connections) do
+        local outline = Drawing.new("Line")
+        outline.Thickness = _G.OutlineThickness
+        outline.Color = _G.OutlineColor
+        outline.Transparency = _G.OutlineEnabled and 1 or 0
+
+        local line = Drawing.new("Line")
+        line.Thickness = _G.LineThickness
+        line.Color = _G.LineColor
+        line.Transparency = 1
+
+        table.insert(skeletonData, {connection = connection, line = line, outline = outline})
+    end
+
+    activeDrawings[player] = skeletonData
+end
+
+-- Update Skeletons
+local function updateSkeletons()
+    for player, skeleton in pairs(activeDrawings) do
+        local character = player.Character
+        if not character then
+            cleanUpSkeleton(player)
+            continue
+        end
+
+        local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+        if not humanoidRootPart or (Camera.CFrame.Position - humanoidRootPart.Position).Magnitude > _G.MaxRenderDistance then
+            cleanUpSkeleton(player)
+            continue
+        end
+
+        for _, data in ipairs(skeleton) do
+            local part1 = character:FindFirstChild(data.connection[1])
+            local part2 = character:FindFirstChild(data.connection[2])
+
+            if part1 and part2 then
+                local pos1, visible1 = Camera:WorldToViewportPoint(part1.Position)
+                local pos2, visible2 = Camera:WorldToViewportPoint(part2.Position)
+
+                if visible1 and visible2 then
+                    local start = Vector2.new(pos1.X, pos1.Y)
+                    local endPos = Vector2.new(pos2.X, pos2.Y)
+
+                    data.outline.From = start
+                    data.outline.To = endPos
+                    data.outline.Visible = _G.OutlineEnabled
+
+                    data.line.From = start
+                    data.line.To = endPos
+                    data.line.Visible = true
+                else
+                    data.line.Visible = false
+                    data.outline.Visible = false
+                end
+            else
+                data.line.Transparency = _G.FallbackTransparency
+                data.outline.Transparency = _G.FallbackTransparency
+            end
+        end
+    end
+end
+
+
+local function monitorSkeletons()
+    while _G.SkeletonESPEnabled do
+        local playerCount = 0
+        for _, player in ipairs(Players:GetPlayers()) do
+            if not activeDrawings[player] then
+                createSkeleton(player)
+            else
+                playerCount = playerCount + 1
+            end
+        end
+
+        -- Log skeleton rendering issues
+        if playerCount < #Players:GetPlayers() then
+            return;
+        end
+
+        task.wait(_G.MonitorInterval)
+    end
+end
+
+-- Handle Player Connections
+local function handlePlayer(player)
+    player.CharacterAdded:Connect(function()
+        task.wait(1) -- Ensure character is fully loaded
+        createSkeleton(player)
+    end)
+
+    player.CharacterRemoving:Connect(function()
+        cleanUpSkeleton(player)
+    end)
+
+    if player.Character then
+        createSkeleton(player)
+    end
+end
+
+-- Initialize for Existing Players
+for _, player in ipairs(Players:GetPlayers()) do
+    handlePlayer(player)
+end
+
+Players.PlayerAdded:Connect(handlePlayer)
+Players.PlayerRemoving:Connect(cleanUpSkeleton)
+
+
+RunService.RenderStepped:Connect(function()
+    if _G.SkeletonESPEnabled then
+        updateSkeletons()
+    else
+        for _, skeleton in pairs(activeDrawings) do
+            for _, data in ipairs(skeleton) do
+                data.line.Visible = false
+                data.outline.Visible = false
+            end
+        end
+    end
+end)
+
+-- Start Monitoring
+task.spawn(monitorSkeletons)
