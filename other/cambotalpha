@@ -1,20 +1,42 @@
-_G.DynamicBoneSelection = false 
-_G.DefaultBone = "Head" 
-_G.SmoothFactor = 9 
-_G.TargetRefreshRate = 0.1 
-_G.VisibilityCheck = false 
-_G.TeamCheck = false 
-_G.AimAssistMode = false
-_G.isAimbotEnabled = false 
+-- Configuration
+_G.DefaultBone = "Head"
+_G.TargetRefreshRate = 0.05
+_G.VisibilityCheck = false
+_G.TeamCheck = false
+_G.isAimbotEnabled = true
+_G.useFOV = true
+_G.drawFOV = true
+_G.FOVRadius = 150 -- Adjustable between 70-200
+_G.SmoothFactor = 20
 
 local player = game:GetService("Players").LocalPlayer
-local mouse = player:GetMouse()
 local camera = workspace.CurrentCamera
 local runService = game:GetService("RunService")
 local userInput = game:GetService("UserInputService")
 
+local mouse = player:GetMouse()
+local isRightClickHeld = false
 local currentTarget = nil
+local fovCircle = nil
 local lastTargetTime = 0
+
+-- FOV Circle Drawing
+if _G.drawFOV then
+    fovCircle = Drawing.new("Circle")
+    fovCircle.Thickness = 2
+    fovCircle.Radius = _G.FOVRadius
+    fovCircle.Color = Color3.fromRGB(255, 255, 255)
+    fovCircle.Visible = _G.useFOV
+    fovCircle.Transparency = 0.5
+end
+
+local function updateFOVCircle()
+    if fovCircle then
+        fovCircle.Position = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+        fovCircle.Radius = _G.FOVRadius
+        fovCircle.Visible = _G.useFOV
+    end
+end
 
 local function isTargetValid(target)
     return target
@@ -23,40 +45,36 @@ local function isTargetValid(target)
         and target.Character.Humanoid.Health > 0
 end
 
-local function isTargetVisible(targetBone)
-    local ignoreList = {player.Character, workspace:FindFirstChild("Ignore")}
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Blacklist
-    params.FilterDescendantsInstances = ignoreList
-
-    local result = workspace:Raycast(camera.CFrame.Position, (targetBone.Position - camera.CFrame.Position), params)
-    return result == nil or result.Instance:IsDescendantOf(targetBone.Parent)
-end
-
 local function isSameTeam(target)
-    return _G.TeamCheck and target.Team and player.Team and target.Team == player.Team
+    return _G.TeamCheck and player.Team and target.Team and player.Team == target.Team
 end
 
-userInput.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton2 then
-        _G.isAimbotEnabled = not _G.isAimbotEnabled
-    end
-end)
+local function calculateTargetScore(target)
+    local bone = target.Character:FindFirstChild(_G.DefaultBone)
+    if not bone then return math.huge end
+
+    local screenPos, onScreen = camera:WorldToViewportPoint(bone.Position)
+    if not onScreen or screenPos.Z <= 0 then return math.huge end
+
+    local centerScreen = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+    local distance2D = (centerScreen - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
+    local depth = screenPos.Z
+
+    -- Weighted scoring: prioritize alignment and 2D proximity
+    local score = distance2D * 0.8 + depth * 0.2
+    return score
+end
 
 local function getClosestTarget()
-    local closestTarget, shortestDistance = nil, math.huge
+    local closestTarget, bestScore = nil, math.huge
     for _, v in ipairs(game:GetService("Players"):GetPlayers()) do
         if v ~= player and isTargetValid(v) and not isSameTeam(v) then
             local bone = v.Character:FindFirstChild(_G.DefaultBone)
             if bone then
-                local bonePos, onScreen = camera:WorldToViewportPoint(bone.Position)
-                local distance = (Vector2.new(mouse.X, mouse.Y) - Vector2.new(bonePos.X, bonePos.Y)).Magnitude
-
-                if onScreen and bonePos.Z > 0 and distance < shortestDistance then
-                    if not _G.VisibilityCheck or isTargetVisible(bone) then
-                        shortestDistance = distance
-                        closestTarget = v
-                    end
+                local score = calculateTargetScore(v)
+                if score < bestScore then
+                    bestScore = score
+                    closestTarget = v
                 end
             end
         end
@@ -65,44 +83,81 @@ local function getClosestTarget()
 end
 
 local function aimCameraAtTarget(target)
-    local bone = target.Character[_G.DefaultBone]
+    local bone = target and target.Character and target.Character:FindFirstChild(_G.DefaultBone)
+    if not bone then return end
+
     local aimCFrame = CFrame.new(camera.CFrame.Position, bone.Position)
     local smoothFactor = 1 / math.clamp(10 - _G.SmoothFactor, 1, 10)
     camera.CFrame = camera.CFrame:Lerp(aimCFrame, smoothFactor)
 end
 
 local function aimMouseAtTarget(target)
-    local bone = target.Character:FindFirstChild(_G.DefaultBone)
-    if bone then
-        local bonePos = camera:WorldToViewportPoint(bone.Position)
-        local targetX, targetY = math.floor(bonePos.X), math.floor(bonePos.Y)
+    local bone = target and target.Character and target.Character:FindFirstChild(_G.DefaultBone)
+    if not bone then return end
 
-     -- // fallbacks
+    local bonePos = camera:WorldToViewportPoint(bone.Position)
+    local targetX, targetY = math.floor(bonePos.X), math.floor(bonePos.Y)
+
+    
+    local success, errorMsg = pcall(function()
         if syn and syn.mousemoveabs then
             syn.mousemoveabs(targetX, targetY)
         elseif mousemoveabs then
             mousemoveabs(targetX, targetY)
         elseif InputSimulator and InputSimulator.MouseMove then
             InputSimulator.MouseMove(targetX, targetY)
+        elseif _G.globalEnv.Input.MoveMouse then
+            _G.globalEnv.Input.MoveMouse(targetX, targetY)
+        else
+            error("No valid mouse movement API found.")
         end
+    end)    
+
+    if not success then
+        warn("Mouse movement failed:", errorMsg)
     end
 end
 
+local function aimAtTarget(target)
+    aimCameraAtTarget(target)
+    aimMouseAtTarget(target)
+end
+
+userInput.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        isRightClickHeld = true
+    end
+end)
+
+userInput.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        isRightClickHeld = false
+        currentTarget = nil -- Reset target on release
+    end
+end)
 
 runService.RenderStepped:Connect(function()
-    if _G.isAimbotEnabled then
+    updateFOVCircle()
+
+    if _G.isAimbotEnabled and isRightClickHeld then
         if os.clock() - lastTargetTime > _G.TargetRefreshRate then
             currentTarget = getClosestTarget()
             lastTargetTime = os.clock()
         end
 
         if currentTarget then
-            if _G.AimAssistMode then
-                aimMouseAtTarget(currentTarget)
-            else
-                aimCameraAtTarget(currentTarget)
-                aimMouseAtTarget(currentTarget)
+            aimAtTarget(currentTarget)
+            if fovCircle then
+                fovCircle.Color = Color3.fromRGB(0, 255, 0) -- Target found
             end
+        else
+            if fovCircle then
+                fovCircle.Color = Color3.fromRGB(255, 255, 255) -- No target
+            end
+        end
+    else
+        if fovCircle then
+            fovCircle.Color = Color3.fromRGB(255, 255, 255)
         end
     end
 end)
